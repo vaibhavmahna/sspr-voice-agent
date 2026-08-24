@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, "src")
 
 from graph_client import GraphClient
-from notify import send_tap_notification
+from notify import send_new_password_notification, send_tap_notification
 from tools import (
     generate_temp_password,
     get_registered_recovery_contact,
@@ -61,13 +61,14 @@ def run(user_identifier: str, execute: bool) -> None:
 
     new_password = generate_temp_password()
     reset_password(client, user_id, new_password)
+    send_new_password_notification(contact["email"], new_password, user.get("displayName", "there"))
     log_action(
         "reset_password",
         user_id,
         "Identity verified via Temporary Access Pass delivered to registered recovery contact.",
     )
-    print(f"\nPassword reset. Temporary password: {new_password}")
-    print("User must change it at next sign-in.")
+    print("\nPassword reset. New temporary password sent to the registered recovery")
+    print("email - never spoken aloud or shown here. User must change it at next sign-in.")
     print("See logs/audit.jsonl for the full trail.")
 
 

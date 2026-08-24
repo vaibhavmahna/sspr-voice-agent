@@ -24,22 +24,47 @@ Instead of trusting anything spoken on the call, this agent:
    behind Microsoft's own SSPR, not the unverified `otherMails`/`mobilePhone`
    profile fields, which Microsoft is retiring from SSPR entirely as of
    September 2026).
-2. Issues a real Microsoft **Temporary Access Pass** and delivers it only to
-   that already-registered contact — never spoken aloud, never sent
-   anywhere unverified.
+2. Generates a one-time numeric code and delivers it only to that
+   already-registered contact — never spoken aloud, never sent anywhere
+   unverified.
 3. Only resets the password once the caller reads that code back correctly.
 
 No knowledge-based questions. Nothing the caller says is trusted until it's
 proven by something only the real account owner could have received.
 
-## Deterministic core (built so far)
+## Architecture
 
-- `src/tools.py` — `get_registered_recovery_contact`, `issue_temporary_access_pass`,
-  `generate_temp_password`, `reset_password`, `log_action`
-- `src/notify.py` — delivers the Temporary Access Pass by email via Graph
-  `sendMail`
-- `main_password_reset.py` — deterministic-only CLI entry point (no LLM yet),
-  dry-run by default
+```mermaid
+flowchart LR
+    A["Browser mic"] -->|"Azure Speech SDK\n(STT)"| B["judgment.py\nConversation, Azure OpenAI"]
+    B -->|"selects a tool"| C["src/tools.py\ndeterministic Graph calls"]
+    C --> D[("Microsoft Graph\nreal Entra tenant")]
+    C --> E[("logs/audit.jsonl")]
+    C -->|"tool result"| B
+    B -->|"reply text"| F["Azure Speech SDK\n(TTS)"] --> G["Browser speaker"]
+```
+
+`judgment.py`'s `Conversation` class is front-end-agnostic — it takes caller
+text one turn at a time and returns the agent's reply, with no idea whether
+that text came from a keyboard or a speech transcript. `web_api.py` (FastAPI)
+wraps it for the browser; `main_password_reset.py` exercises the same
+deterministic tools without any LLM, for testing the core actions in
+isolation.
+
+## What's built
+
+- **Deterministic core** (`src/tools.py`, `src/notify.py`) — recovery-contact
+  lookup, one-time code generation, email delivery, password reset. Nothing
+  here is probabilistic.
+- **LLM judgment layer** (`judgment.py`) — decides how to handle each call:
+  which channel to verify through, whether to escalate, when to actually
+  reset. Same deterministic-core-plus-judgment-layer split as
+  `entra-automation-agent`.
+- **Voice front end** (`web_api.py` + `web/index.html`) — browser microphone
+  and speaker via Azure AI Speech SDK, talking to the judgment layer one
+  turn at a time over a small FastAPI backend. No telephony, no Azure
+  Communication Services phone number, no organizational-verification
+  bottleneck.
 
 ## Setup
 
@@ -69,26 +94,86 @@ A separate app registration (`MAIL_*` in `.env`) sends the notification
 email, same pattern as `entra-automation-agent`'s mailbox connector —
 `Mail.Send`, scoped to one mailbox via an Exchange Application Access Policy.
 
+`DEFAULT_DOMAIN` is the tenant domain appended to a bare username (see
+below for why). `SPEECH_KEY`/`SPEECH_REGION` are from an Azure AI Speech
+resource (F0 free tier is enough for this).
+
 ## Usage
+
+Deterministic core only, no LLM (for testing the actions in isolation):
 
 ```bash
 python main_password_reset.py someone@yourtenant.onmicrosoft.com              # dry run
 python main_password_reset.py someone@yourtenant.onmicrosoft.com --execute    # actually perform it
 ```
 
-**Test against a disposable sandbox tenant first** — this genuinely issues
-access passes and resets real passwords.
+Full conversation, text-only, at the terminal:
+
+```bash
+python judgment.py
+```
+
+Full voice demo, in a browser:
+
+```bash
+python -m uvicorn web_api:app --port 8010
+```
+
+Then open `http://127.0.0.1:8010/` — **use Chrome**, not Safari (see below).
+
+**Test against a disposable sandbox tenant first** — this genuinely sends
+codes and resets real passwords.
+
+## Real problems hit building this
+
+- **A real Microsoft Temporary Access Pass turned out to be a bad fit for
+  voice**, despite being the "correct," Microsoft-native mechanism. Live
+  testing proved it decisively: a caller correctly read back every
+  character of a TAP, including explicitly stating "lowercase f" for a
+  specific letter, and verification still failed twice — once because the
+  model didn't fully convert "at the rate" into `@` and left a stray space,
+  once because it defaulted to uppercase despite the caller's explicit
+  callout. Asking a probabilistic model to produce an exact-case,
+  exact-symbol string from speech isn't a prompting problem, it's the wrong
+  place to enforce exact formatting. Switched to a self-generated 6-digit
+  numeric code instead — same security property (still delivered only to
+  the already-registered contact, still one-time, still time-limited), just
+  actually readable over a call. Losing "it's Microsoft's own TAP
+  mechanism" as a talking point was a real trade-off, but one live testing
+  made obviously worth it.
+- **Even numeric codes need an echo-back step.** A different live test hit
+  a genuine speech-to-text transcription error — a duplicated character
+  (`e+d2db$5` came through as `e+d2ddb$5`) that had nothing to do with
+  formatting. Fuzzy-matching around that would weaken the actual security
+  check, so instead the agent now always repeats back what it understood
+  and waits for the caller to confirm before spending a verification
+  attempt on it — the same pattern real phone verification systems use.
+- **Speech-to-text reliably mangles a spoken domain name.** Asking a caller
+  to say their full UPN out loud (`snd-user1@company.onmicrosoft.com`) was
+  a bad idea — "onmicrosoft.com" routinely came through as "on microsoft
+  dot com" or similar. Callers are now only asked for their short username;
+  the tenant's default domain is appended server-side instead.
+- **Safari couldn't reliably reactivate the microphone for a second turn**
+  in the same page session — the mic indicator simply never lit up again,
+  with no error thrown. Chrome handled the same code without issue.
+  Recreating the `SpeechRecognizer`/`SpeechSynthesizer` on every single turn
+  made this worse (a mic teardown/setup race that made the SDK silently
+  hang); creating them once per call and reusing them for every turn
+  fixed the hang, but Chrome is still the recommended browser for this demo.
+- **A pinned dependency had quietly drifted.** `entra-automation-agent`'s
+  `requirements.txt` still said `openai==1.58.1`, but the actually-installed
+  version had been upgraded to 2.48.0 at some point without updating the
+  pin — and the Responses API this project depends on doesn't exist in
+  1.58.1. Found by hitting `AttributeError: 'OpenAI' object has no attribute
+  'responses'` and checking the real installed version rather than trusting
+  the pin.
 
 ## Roadmap
 
-- [ ] Wire in an LLM judgment layer (same pattern as `entra-automation-agent`'s
-      `judgment.py`) — checks context, decides proceed vs. hold, instead of a
-      human running the CLI by hand
-- [ ] Browser-based voice front end (mic input, Azure AI Speech SDK or OpenAI
-      Realtime API for STT/TTS) feeding transcribed text into the judgment
-      loop — no telephony, no Azure Communication Services phone number, no
-      organizational-verification bottleneck
-- [ ] SMS delivery for the Temporary Access Pass as an alternative to email
+- [ ] SMS delivery as an alternative to email (currently escalates cleanly
+      rather than pretending to send)
+- [ ] Deploy somewhere live (Azure Static Web Apps + Function, matching the
+      main site's pattern) instead of running locally only
 
 ## License
 

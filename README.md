@@ -36,12 +36,12 @@ proven by something only the real account owner could have received.
 
 ```mermaid
 flowchart LR
-    A["Browser mic"] -->|"Azure Speech SDK\n(STT)"| B["judgment.py\nConversation, Azure OpenAI"]
+    A["Voice input\n(currently: browser mic)"] -->|"speech-to-text"| B["judgment.py\nConversation, Azure OpenAI"]
     B -->|"selects a tool"| C["src/tools.py\ndeterministic Graph calls"]
     C --> D[("Microsoft Graph\nreal Entra tenant")]
     C --> E[("logs/audit.jsonl")]
     C -->|"tool result"| B
-    B -->|"reply text"| F["Azure Speech SDK\n(TTS)"] --> G["Browser speaker"]
+    B -->|"reply text"| F["text-to-speech"] --> G["Voice output\n(currently: browser speaker)"]
 ```
 
 `judgment.py`'s `Conversation` class is front-end-agnostic — it takes caller
@@ -60,11 +60,15 @@ isolation.
   which channel to verify through, whether to escalate, when to actually
   reset. Same deterministic-core-plus-judgment-layer split as
   `entra-automation-agent`.
-- **Voice front end** (`web_api.py` + `web/index.html`) — browser microphone
-  and speaker via Azure AI Speech SDK, talking to the judgment layer one
-  turn at a time over a small FastAPI backend. No telephony, no Azure
-  Communication Services phone number, no organizational-verification
-  bottleneck.
+- **Voice front end** (`web_api.py` + `web/index.html`) — a voice input/output
+  layer talking to the judgment layer one turn at a time over a small
+  FastAPI backend. Currently a browser microphone and speaker via Azure AI
+  Speech SDK, but `Conversation.process_turn()` just takes text in and
+  returns text out - it has no idea the input came from a browser, so this
+  input source is swappable (a different STT/TTS provider, a different
+  client entirely) without touching the judgment layer at all. No
+  telephony, no Azure Communication Services phone number, no
+  organizational-verification bottleneck.
 
 ## Setup
 
@@ -174,6 +178,10 @@ codes and resets real passwords.
       rather than pretending to send)
 - [ ] Deploy somewhere live (Azure Static Web Apps + Function, matching the
       main site's pattern) instead of running locally only
+- [ ] Real telephony via Azure Communication Services - `Conversation.process_turn()`
+      already takes text in and returns text out with no idea where it came
+      from, so swapping the browser mic/speaker for an actual inbound phone
+      number is a new front end, not a rework of the judgment layer itself
 
 ## License
 

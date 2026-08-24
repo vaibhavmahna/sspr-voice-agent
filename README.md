@@ -217,10 +217,18 @@ could be found and hit by anyone.
 
 - [ ] Deploy somewhere live (Azure Static Web Apps + Function, matching the
       main site's pattern) instead of running locally only
-- [ ] Real telephony via Azure Communication Services - `Conversation.process_turn()`
-      already takes text in and returns text out with no idea where it came
-      from, so swapping the browser mic/speaker for an actual inbound phone
-      number is a new front end, not a rework of the judgment layer itself
+- [ ] Real telephony via Azure Communication Services (ACS) Call Automation -
+      `Conversation.process_turn()` already takes text in and returns text
+      out with no idea where it came from, so swapping the browser mic/
+      speaker for an actual inbound phone number is a new front end, not a
+      rework of the judgment layer itself. This follows Microsoft's own
+      reference pattern for exactly this
+      ([Call Automation + Azure OpenAI sample](https://github.com/Azure-Samples/communication-services-openai-sample),
+      [ART Voice Agent Accelerator](https://azure-samples.github.io/art-voice-agent-accelerator/)),
+      not a homegrown approach. Can be built and fully tested with ACS-identity
+      VoIP calling alone (confirmed via Microsoft Learn's Call Automation docs)
+      - no phone number or organizational verification needed until it's time
+      to point a real number at the same webhook.
 
 ## License
 

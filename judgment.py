@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from dataclasses import dataclass, field
 
@@ -221,8 +222,22 @@ def _handle_send_verification_code(client, session, args):
     return {"sent": False, "error": f"No registered {channel} on file."}
 
 
+def _normalize_code(text: str) -> str:
+    """Callers read codes aloud with all sorts of natural phrasing - spelled-
+    out case ("lowercase f"), spoken symbols ("at the rate" for @), and
+    stray spaces between characters. Relying on the model to transcribe
+    that into an exact-case, exact-symbol string is asking a probabilistic
+    system to do precise formatting - it fails for reasons that have
+    nothing to do with whether the caller actually has the right code.
+    Normalize both sides the same way instead: case-insensitive, common
+    spoken-symbol phrases converted, all whitespace stripped."""
+    text = text.lower()
+    text = text.replace("at the rate", "@").replace("at sign", "@").replace(" at ", "@")
+    return re.sub(r"\s+", "", text)
+
+
 def _handle_verify_code(client, session, args):
-    match = args["code"].strip() == session.get("tap_code")
+    match = _normalize_code(args["code"]) == _normalize_code(session.get("tap_code", ""))
     session["verified"] = match
     return {"match": match}
 

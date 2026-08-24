@@ -41,7 +41,7 @@ def send_verification_code_notification(recipient_email: str, code: str, display
 
 def send_new_password_notification(recipient_email: str, new_password: str, display_name: str) -> None:
     """Delivers the new temporary password to the same already-registered
-    recovery email the Temporary Access Pass went to - never spoken aloud
+    recovery email the verification code went to - never spoken aloud
     on the call itself. Reading a password out over voice would undo the
     whole point of verifying through a channel that can't be phished or
     spoofed in the first place."""

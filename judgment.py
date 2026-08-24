@@ -248,38 +248,52 @@ def _extract_text(response) -> str:
     return next((item.content[0].text for item in response.output if item.type == "message"), "")
 
 
-def run_conversation(verbose: bool = True) -> JudgmentResult:
-    """Runs one full call end to end, prompting for caller input at the
-    terminal - a stand-in for real voice input/output until the speech
-    front end is built. Text in, text out; the judgment logic underneath
-    doesn't know or care that it's a keyboard instead of a microphone."""
-    openai_client = _openai_client()
-    graph_client = GraphClient()
-    deployment = os.environ["AZURE_OPENAI_DEPLOYMENT"]
+GREETING = "Hi, thanks for calling Plixa IT support. Can I get your username to get started?"
 
-    session: dict = {}
-    input_items: list = []
-    tools_called: list = []
 
-    greeting = "Hi, thanks for calling Plixa IT support. Can I get your username to get started?"
-    if verbose:
-        print(f"Agent: {greeting}")
-    input_items.append({"role": "assistant", "content": greeting})
+class Conversation:
+    """One password-reset call, front-end-agnostic. Feed it caller text one
+    turn at a time via process_turn() - it doesn't know or care whether that
+    text came from a keyboard (CLI testing) or a speech-to-text transcript
+    (the real voice front end). All state for the call (who's calling, which
+    channel, the issued code) lives on this instance, not at module level -
+    a web backend can hold one of these per active call."""
 
-    while True:
-        caller_text = input("Caller: ").strip()
-        input_items.append({"role": "user", "content": caller_text})
+    def __init__(self, verbose: bool = False):
+        self.verbose = verbose
+        self.openai_client = _openai_client()
+        self.graph_client = GraphClient()
+        self.deployment = os.environ["AZURE_OPENAI_DEPLOYMENT"]
+
+        self.session: dict = {}
+        self.input_items: list = [{"role": "assistant", "content": GREETING}]
+        self.tools_called: list = []
+        self.last_response_text: str = GREETING
+
+    @property
+    def is_terminal(self) -> bool:
+        return any(t in TERMINAL_TOOLS for t in self.tools_called)
+
+    def process_turn(self, caller_text: str) -> str:
+        """Feeds one piece of caller input through the model, running any
+        tool calls it makes, and returns the agent's next line of dialogue.
+        Raises if called again after is_terminal is already True - a call
+        that's ended shouldn't be fed more input."""
+        if self.is_terminal:
+            raise RuntimeError("This conversation has already ended - start a new one.")
+
+        self.input_items.append({"role": "user", "content": caller_text})
 
         final_text = ""
         for _ in range(10):
-            response = openai_client.responses.create(
-                model=deployment,
+            response = self.openai_client.responses.create(
+                model=self.deployment,
                 instructions=INSTRUCTIONS,
-                input=input_items,
+                input=self.input_items,
                 tools=TOOLS,
             )
             function_calls = [item for item in response.output if item.type == "function_call"]
-            input_items += response.output
+            self.input_items += response.output
 
             if not function_calls:
                 final_text = _extract_text(response)
@@ -287,16 +301,16 @@ def run_conversation(verbose: bool = True) -> JudgmentResult:
 
             for call in function_calls:
                 args = json.loads(call.arguments)
-                tools_called.append(call.name)
-                if verbose:
+                self.tools_called.append(call.name)
+                if self.verbose:
                     print(f"  -> {call.name}({args})")
                 try:
-                    result = HANDLERS[call.name](graph_client, session, args)
+                    result = HANDLERS[call.name](self.graph_client, self.session, args)
                 except Exception as exc:
                     result = {"error": str(exc)}
-                if verbose:
+                if self.verbose:
                     print(f"  <- {result}")
-                input_items.append(
+                self.input_items.append(
                     {
                         "type": "function_call_output",
                         "call_id": call.call_id,
@@ -304,11 +318,29 @@ def run_conversation(verbose: bool = True) -> JudgmentResult:
                     }
                 )
 
+        self.last_response_text = final_text
+        return final_text
+
+    def result(self) -> JudgmentResult:
+        return JudgmentResult(final_text=self.last_response_text, tools_called=self.tools_called)
+
+
+def run_conversation(verbose: bool = True) -> JudgmentResult:
+    """CLI entry point - a stand-in for real voice input/output until the
+    speech front end is built. Just a thin loop around Conversation, proving
+    the same class a web backend will use works fine driven from a
+    terminal too."""
+    conversation = Conversation(verbose=verbose)
+    if verbose:
+        print(f"Agent: {GREETING}")
+
+    while not conversation.is_terminal:
+        caller_text = input("Caller: ").strip()
+        final_text = conversation.process_turn(caller_text)
         if verbose:
             print(f"Agent: {final_text}")
 
-        if any(t in TERMINAL_TOOLS for t in tools_called):
-            return JudgmentResult(final_text, tools_called)
+    return conversation.result()
 
 
 if __name__ == "__main__":

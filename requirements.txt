@@ -6,3 +6,4 @@ azure-identity==1.19.0
 fastapi==0.115.6
 uvicorn==0.34.0
 pydantic==2.13.4
+azure-functions==1.21.3

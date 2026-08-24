@@ -6,3 +6,7 @@ venv/
 logs/*.jsonl
 .DS_Store
 test_scenarios.py
+local.settings.json
+.python_packages/
+bin/
+obj/

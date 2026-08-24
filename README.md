@@ -128,6 +128,47 @@ Then open `http://127.0.0.1:8010/` — **use Chrome**, not Safari (see below).
 **Test against a disposable sandbox tenant first** — this genuinely sends
 codes and resets real passwords.
 
+## Deploying
+
+Runs as a single Azure Function (Linux, Consumption plan) — the same
+FastAPI app that serves the browser demo locally, just wrapped for Azure
+Functions and serving both the static front end and the API from one
+deployment. No separate Static Web App needed.
+
+```bash
+# Resource group, storage account, and the Function App itself
+az group create --name <your-resource-group> --location <your-region>
+az storage account create --name <your-storage-account> \
+  --resource-group <your-resource-group> --location <your-region> --sku Standard_LRS
+az functionapp create --name <your-function-app-name> \
+  --resource-group <your-resource-group> --storage-account <your-storage-account> \
+  --consumption-plan-location <your-region> --runtime python \
+  --runtime-version 3.11 --functions-version 4 --os-type Linux
+
+# Managed identity, so DefaultAzureCredential can reach Azure OpenAI with no key
+az functionapp identity assign --name <your-function-app-name> --resource-group <your-resource-group>
+az role assignment create --assignee <principal-id-from-above> \
+  --role "Cognitive Services OpenAI User" --scope <your-azure-openai-resource-id>
+
+# Every value from .env as an app setting
+az functionapp config appsettings set --name <your-function-app-name> \
+  --resource-group <your-resource-group> --settings GRAPH_TENANT_ID=... [...]
+```
+
+`function_app.py` wraps `web_api.py`'s FastAPI app with `func.AsgiFunctionApp`
+(`http_auth_level=ANONYMOUS`, since the browser calls these endpoints
+directly with no key). `host.json` sets `routePrefix: ""` so the routes
+match exactly what's used locally. Deploy the zip directly via Kudu rather
+than `az functionapp deployment source config-zip` if that command silently
+no-ops (it did during this build) - `az rest`/`curl` against
+`https://<app>.scm.azurewebsites.net/api/zipdeploy?isAsync=false` with an
+ARM bearer token worked reliably instead.
+
+A live instance of this exists for demo purposes but isn't linked here
+deliberately - the API has no rate limiting or access control in front of
+it yet, so the URL is only shared directly rather than published where it
+could be found and hit by anyone.
+
 ## Real problems hit building this
 
 - **A real Microsoft Temporary Access Pass turned out to be a bad fit for
@@ -174,8 +215,6 @@ codes and resets real passwords.
 
 ## Roadmap
 
-- [ ] SMS delivery as an alternative to email (currently escalates cleanly
-      rather than pretending to send)
 - [ ] Deploy somewhere live (Azure Static Web Apps + Function, matching the
       main site's pattern) instead of running locally only
 - [ ] Real telephony via Azure Communication Services - `Conversation.process_turn()`

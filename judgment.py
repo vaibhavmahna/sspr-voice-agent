@@ -4,6 +4,7 @@ import json
 import os
 import re
 import sys
+import time
 from dataclasses import dataclass, field
 
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
@@ -13,15 +14,17 @@ from openai import OpenAI
 sys.path.insert(0, "src")
 
 from graph_client import GraphClient
-from notify import send_new_password_notification, send_tap_notification
+from notify import send_new_password_notification, send_verification_code_notification
 from tools import (
     generate_temp_password,
+    generate_verification_code,
     get_registered_recovery_contact,
     get_user,
-    issue_temporary_access_pass,
     log_action,
     reset_password,
 )
+
+CODE_LIFETIME_SECONDS = 600
 
 load_dotenv()
 
@@ -87,23 +90,25 @@ another channel silently or guess.
 
 --- Verifying the code ---
 
-After sendVerificationCode succeeds, tell the caller a code was sent to
-their registered contact and ask them to read it back to you. Speech
-transcription of a spelled-out code is genuinely error-prone - characters
-get misheard or duplicated. Before calling verifyCode, always repeat back
-exactly what you understood, character by character (e.g., "I heard e,
-plus, d, two, d, b, dollar sign, five - is that right?") and wait for the
-caller to confirm. If they say it's wrong, ask them to read it again and
-repeat this same echo-back-and-confirm step - don't call verifyCode until
-the caller has confirmed what you heard is correct. This catches
-transcription mistakes before spending a verification attempt on them.
+After sendVerificationCode succeeds, tell the caller a 6-digit code was
+sent to their registered contact and ask them to read it back to you.
+Speech transcription of spoken digits can still misfire (extra, dropped,
+or swapped digits). Before calling verifyCode, always repeat back exactly
+what you understood, digit by digit (e.g., "I heard six, two, one, four,
+zero, seven - is that right?") and wait for the caller to confirm. If they
+say it's wrong, ask them to read it again and repeat this same
+echo-back-and-confirm step - don't call verifyCode until the caller has
+confirmed what you heard is correct. This catches transcription mistakes
+before spending a verification attempt on them.
 
 Once the caller confirms what you heard, call verifyCode with that. If it
 doesn't match, you may ask them to double-check and read it back once
 more (repeating the same echo-back-and-confirm step) - but if it fails a
-second time, say "{HELPDESK_MESSAGE}" and call escalateToHuman. Never
-accept a "close enough" match, and never treat anything other than a
-correct code from verifyCode as proof of identity.
+second time, say "{HELPDESK_MESSAGE}" and call escalateToHuman. If
+verifyCode indicates the code expired, tell the caller it expired and say
+"{HELPDESK_MESSAGE}" and call escalateToHuman rather than trying again.
+Never accept a "close enough" match, and never treat anything other than
+a correct code from verifyCode as proof of identity.
 
 --- Completing the reset ---
 
@@ -148,7 +153,7 @@ TOOLS = [
     {
         "type": "function",
         "name": "sendVerificationCode",
-        "description": "Issue a Temporary Access Pass and send it to the caller's registered contact on the specified channel. Only call this with a channel that lookupUser confirmed is actually registered.",
+        "description": "Generate a one-time numeric verification code and send it to the caller's registered contact on the specified channel. Only call this with a channel that lookupUser confirmed is actually registered.",
         "parameters": {
             "type": "object",
             "properties": {"channel": {"type": "string", "enum": ["email", "phone"]}},
@@ -218,10 +223,11 @@ def _handle_send_verification_code(client, session, args):
     contact = session.get("contact", {})
 
     if channel == "email" and contact.get("email"):
-        tap = issue_temporary_access_pass(client, session["user_id"])
-        session["tap_code"] = tap["temporaryAccessPass"]
+        code = generate_verification_code()
+        session["verification_code"] = code
+        session["code_issued_at"] = time.time()
         session["channel"] = "email"
-        send_tap_notification(contact["email"], session["tap_code"], session.get("display_name", "there"))
+        send_verification_code_notification(contact["email"], code, session.get("display_name", "there"))
         return {"sent": True, "channel": "email"}
 
     if channel == "phone" and contact.get("phone"):
@@ -233,21 +239,18 @@ def _handle_send_verification_code(client, session, args):
 
 
 def _normalize_code(text: str) -> str:
-    """Callers read codes aloud with all sorts of natural phrasing - spelled-
-    out case ("lowercase f"), spoken symbols ("at the rate" for @), and
-    stray spaces between characters. Relying on the model to transcribe
-    that into an exact-case, exact-symbol string is asking a probabilistic
-    system to do precise formatting - it fails for reasons that have
-    nothing to do with whether the caller actually has the right code.
-    Normalize both sides the same way instead: case-insensitive, common
-    spoken-symbol phrases converted, all whitespace stripped."""
-    text = text.lower()
-    text = text.replace("at the rate", "@").replace("at sign", "@").replace(" at ", "@")
-    return re.sub(r"\s+", "", text)
+    """A caller reading digits aloud can still add stray words or pauses
+    ("it's uh six, two, one...") that a strict comparison would reject for
+    reasons that have nothing to do with whether the code itself is right -
+    strip everything but digits before comparing."""
+    return re.sub(r"\D", "", text)
 
 
 def _handle_verify_code(client, session, args):
-    match = _normalize_code(args["code"]) == _normalize_code(session.get("tap_code", ""))
+    if time.time() - session.get("code_issued_at", 0) > CODE_LIFETIME_SECONDS:
+        return {"match": False, "expired": True}
+
+    match = _normalize_code(args["code"]) == session.get("verification_code")
     session["verified"] = match
     return {"match": match}
 
@@ -264,7 +267,7 @@ def _handle_reset_password(client, session, args):
     log_action(
         "reset_password",
         user_id,
-        "Identity verified via Temporary Access Pass delivered to registered recovery contact.",
+        "Identity verified via one-time verification code delivered to registered recovery contact.",
         actor="plixa-sspr-judgment-agent",
     )
     return {"status": "reset_complete"}

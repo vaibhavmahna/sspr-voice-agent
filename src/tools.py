@@ -30,17 +30,20 @@ def get_registered_recovery_contact(client: GraphClient, user_id: str) -> dict:
     }
 
 
-def issue_temporary_access_pass(client: GraphClient, user_id: str, lifetime_minutes: int = 60) -> dict:
-    """Issues a one-time, time-limited Temporary Access Pass - the real Entra
-    mechanism for signing in without a password. The caller never receives
-    this directly from us; it's only ever delivered to their already-
-    registered recovery contact, and the caller reads it back to prove
-    they received it there."""
-    resp = client.post(
-        f"/users/{user_id}/authentication/temporaryAccessPassMethods",
-        {"lifetimeInMinutes": lifetime_minutes, "isUsableOnce": True},
-    )
-    return resp.json()
+def generate_verification_code(length: int = 6) -> str:
+    """Generates a random numeric one-time verification code. Deliberately
+    digits-only - a real Microsoft Temporary Access Pass (mixed case,
+    digits, symbols) was tried first, but live voice testing proved it
+    genuinely hard to read back accurately over a call: callers correctly
+    spelling out every character, including explicit "lowercase"/"uppercase"
+    callouts, still failed verification because a probabilistic model
+    (or the transcription itself) got a character or the phrasing of a
+    symbol wrong. The security property that actually matters - only
+    someone with access to the already-registered recovery contact can
+    ever produce the right code - holds identically for a self-generated
+    numeric code delivered the same way, without asking a caller to
+    convey case or symbols by voice at all."""
+    return "".join(secrets.choice(string.digits) for _ in range(length))
 
 
 def generate_temp_password(length: int = 16) -> str:

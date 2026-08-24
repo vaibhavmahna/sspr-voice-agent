@@ -8,12 +8,12 @@ from dotenv import load_dotenv
 sys.path.insert(0, "src")
 
 from graph_client import GraphClient
-from notify import send_new_password_notification, send_tap_notification
+from notify import send_new_password_notification, send_verification_code_notification
 from tools import (
     generate_temp_password,
+    generate_verification_code,
     get_registered_recovery_contact,
     get_user,
-    issue_temporary_access_pass,
     log_action,
     reset_password,
 )
@@ -81,26 +81,25 @@ def run(user_identifier: str, execute: bool) -> None:
     print(f"Channel selected: email ({contact['email']})")
 
     if not execute:
-        print("\nDry run only. Would issue a Temporary Access Pass, send it to the")
-        print("channel above, and (once the caller confirms it) reset the password.")
+        print("\nDry run only. Would generate a one-time verification code, send it to")
+        print("the channel above, and (once the caller confirms it) reset the password.")
         print("\nRe-run with --execute to actually perform this action.")
         return
 
-    tap = issue_temporary_access_pass(client, user_id)
-    tap_code = tap["temporaryAccessPass"]
-    print(f"\nIssued a Temporary Access Pass, valid {tap.get('lifetimeInMinutes')} minutes.")
+    code = generate_verification_code()
+    print("\nGenerated a one-time verification code, valid 10 minutes.")
 
-    send_tap_notification(contact["email"], tap_code, user.get("displayName", "there"))
+    send_verification_code_notification(contact["email"], code, user.get("displayName", "there"))
     print(f"Sent to registered recovery email: {contact['email']}")
 
     confirmed_code = input("\nEnter the code the caller read back to you: ").strip()
-    if confirmed_code != tap_code:
+    if confirmed_code != code:
         print("\nCode does not match what was issued. Do not proceed - escalate.")
         print(f'Agent says: "{HELPDESK_MESSAGE}"')
         log_action(
             "password_reset_verification_failed",
             user_id,
-            "Caller-provided code did not match the issued Temporary Access Pass.",
+            "Caller-provided code did not match the issued verification code.",
         )
         return
 
@@ -110,7 +109,7 @@ def run(user_identifier: str, execute: bool) -> None:
     log_action(
         "reset_password",
         user_id,
-        "Identity verified via Temporary Access Pass delivered to registered recovery contact.",
+        "Identity verified via one-time verification code delivered to registered recovery contact.",
     )
     print("\nPassword reset. New temporary password sent to the registered recovery")
     print("email - never spoken aloud or shown here. User must change it at next sign-in.")

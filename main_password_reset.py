@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import sys
 
@@ -24,6 +26,25 @@ HELPDESK_MESSAGE = (
 )
 
 
+def choose_recovery_channel(contact: dict) -> str | None:
+    """Decides which registered channel to verify through - never a
+    knowledge-based question, only ever a choice between channels Entra
+    already has on record. Returns "email", "phone", or None if nothing
+    is registered to verify against at all."""
+    has_email = bool(contact["email"])
+    has_phone = bool(contact["phone"])
+
+    if not has_email and not has_phone:
+        return None
+    if has_email and has_phone:
+        choice = input(
+            f"\nBoth an email ({contact['email']}) and a phone ({contact['phone']}) "
+            "are on file. Which would the caller like the code sent to? [email/phone]: "
+        ).strip().lower()
+        return choice if choice in ("email", "phone") else "email"
+    return "email" if has_email else "phone"
+
+
 def run(user_identifier: str, execute: bool) -> None:
     client = GraphClient()
 
@@ -32,7 +53,9 @@ def run(user_identifier: str, execute: bool) -> None:
     print(f"User: {user.get('displayName')} <{user.get('userPrincipalName')}>")
 
     contact = get_registered_recovery_contact(client, user_id)
-    if not contact["email"] and not contact["phone"]:
+    channel = choose_recovery_channel(contact)
+
+    if channel is None:
         print("\nNo registered recovery email or phone on file for this user.")
         print("Nothing to verify identity against - escalate to a human.")
         print(f'Agent says: "{HELPDESK_MESSAGE}"')
@@ -42,23 +65,25 @@ def run(user_identifier: str, execute: bool) -> None:
             "No registered recovery email or phone on file - nothing to verify identity against.",
         )
         return
-    print(f"Registered recovery contact: {contact['email'] or contact['phone']}")
 
-    if not execute:
-        print("\nDry run only. Would issue a Temporary Access Pass, send it to the")
-        print("contact above, and (once the caller confirms it) reset the password.")
-        print("\nRe-run with --execute to actually perform this action.")
-        return
-
-    if not contact["email"]:
-        print(f"\nOnly a phone number is on file ({contact['phone']}) - SMS delivery")
-        print("isn't wired up yet, only email. Escalate to a human for now.")
+    if channel == "phone":
+        print(f"\nChannel selected: phone ({contact['phone']}) - SMS delivery isn't")
+        print("wired up yet, only email. Escalate to a human for now.")
         print(f'Agent says: "{HELPDESK_MESSAGE}"')
         log_action(
             "password_reset_escalated",
             user_id,
-            "Only a phone number on file and SMS delivery isn't supported yet - escalated rather than guessing.",
+            "Phone was the selected/only recovery channel and SMS delivery isn't "
+            "supported yet - escalated rather than guessing or falling back silently.",
         )
+        return
+
+    print(f"Channel selected: email ({contact['email']})")
+
+    if not execute:
+        print("\nDry run only. Would issue a Temporary Access Pass, send it to the")
+        print("channel above, and (once the caller confirms it) reset the password.")
+        print("\nRe-run with --execute to actually perform this action.")
         return
 
     tap = issue_temporary_access_pass(client, user_id)

@@ -16,6 +16,13 @@ from tools import (
     reset_password,
 )
 
+# What the agent actually says to the caller whenever it can't proceed on its
+# own - never a technical explanation, just a clean handoff.
+HELPDESK_MESSAGE = (
+    "I'm not able to verify your identity automatically right now. "
+    "Please contact your IT helpdesk directly for assistance."
+)
+
 
 def run(user_identifier: str, execute: bool) -> None:
     client = GraphClient()
@@ -28,6 +35,12 @@ def run(user_identifier: str, execute: bool) -> None:
     if not contact["email"] and not contact["phone"]:
         print("\nNo registered recovery email or phone on file for this user.")
         print("Nothing to verify identity against - escalate to a human.")
+        print(f'Agent says: "{HELPDESK_MESSAGE}"')
+        log_action(
+            "password_reset_escalated",
+            user_id,
+            "No registered recovery email or phone on file - nothing to verify identity against.",
+        )
         return
     print(f"Registered recovery contact: {contact['email'] or contact['phone']}")
 
@@ -40,6 +53,12 @@ def run(user_identifier: str, execute: bool) -> None:
     if not contact["email"]:
         print(f"\nOnly a phone number is on file ({contact['phone']}) - SMS delivery")
         print("isn't wired up yet, only email. Escalate to a human for now.")
+        print(f'Agent says: "{HELPDESK_MESSAGE}"')
+        log_action(
+            "password_reset_escalated",
+            user_id,
+            "Only a phone number on file and SMS delivery isn't supported yet - escalated rather than guessing.",
+        )
         return
 
     tap = issue_temporary_access_pass(client, user_id)
@@ -52,6 +71,7 @@ def run(user_identifier: str, execute: bool) -> None:
     confirmed_code = input("\nEnter the code the caller read back to you: ").strip()
     if confirmed_code != tap_code:
         print("\nCode does not match what was issued. Do not proceed - escalate.")
+        print(f'Agent says: "{HELPDESK_MESSAGE}"')
         log_action(
             "password_reset_verification_failed",
             user_id,

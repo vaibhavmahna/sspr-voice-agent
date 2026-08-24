@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Plixa SSPR Voice Agent (demo)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<script src="https://aka.ms/csspeech/jsbrowserpackageraw"></script>
+<style>
+  :root {
+    --navy: #25384A;
+    --navy-ink: #1a2733;
+    --sand: #D8C8B5;
+    --sand-light: #f3ede4;
+    --muted: #6b7684;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: var(--sand-light);
+    color: var(--navy-ink);
+    margin: 0;
+    padding: 40px 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  .card {
+    background: #fff;
+    border-radius: 12px;
+    padding: 32px;
+    max-width: 560px;
+    width: 100%;
+    box-shadow: 0 2px 12px rgba(37, 56, 74, 0.08);
+  }
+  h1 { font-size: 1.3rem; margin: 0 0 4px; color: var(--navy); }
+  .subtitle { color: var(--muted); font-size: 0.9rem; margin: 0 0 24px; }
+  #status {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--navy);
+    background: var(--sand-light);
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 999px;
+    margin-bottom: 16px;
+  }
+  #transcript {
+    min-height: 200px;
+    max-height: 400px;
+    overflow-y: auto;
+    background: var(--sand-light);
+    border-radius: 8px;
+    padding: 16px;
+    margin-bottom: 20px;
+  }
+  .line { margin-bottom: 10px; font-size: 0.95rem; line-height: 1.4; }
+  .line.agent { color: var(--navy); }
+  .line.caller { color: var(--navy-ink); }
+  .line b { display: block; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; color: var(--muted); margin-bottom: 2px; }
+  button {
+    background: var(--navy);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    padding: 12px 24px;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    width: 100%;
+  }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  button:hover:not(:disabled) { background: var(--navy-ink); }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Plixa IT Support - Password Reset</h1>
+    <p class="subtitle">Voice demo - browser mic only, no phone number involved.</p>
+    <div id="status">Ready</div>
+    <div id="transcript"></div>
+    <button id="startBtn">Start Call</button>
+  </div>
+
+<script>
+const API_BASE = "";
+
+const startBtn = document.getElementById("startBtn");
+const statusEl = document.getElementById("status");
+const transcriptEl = document.getElementById("transcript");
+
+let sessionId = null;
+let speechConfig = null;
+let recognizer = null;
+let synthesizer = null;
+
+function setStatus(text) {
+  statusEl.textContent = text;
+}
+
+function addLine(speaker, text) {
+  const div = document.createElement("div");
+  div.className = "line " + speaker.toLowerCase();
+  div.innerHTML = `<b>${speaker}</b>${text}`;
+  transcriptEl.appendChild(div);
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+}
+
+async function fetchSpeechToken() {
+  const resp = await fetch(`${API_BASE}/speech-token`, { method: "POST" });
+  const data = await resp.json();
+  return SpeechSDK.SpeechConfig.fromAuthorizationToken(data.token, data.region);
+}
+
+// One recognizer and one synthesizer for the whole call, created once in
+// the Start Call handler and reused for every turn - recreating them (and
+// the underlying microphone connection) on every single turn is a known
+// way to make the SDK silently hang on the second recognizeOnceAsync call,
+// since the previous turn's mic teardown can race the next turn's setup.
+
+function speak(text) {
+  return new Promise((resolve) => {
+    synthesizer.speakTextAsync(
+      text,
+      () => resolve(),
+      (err) => { console.error("TTS error:", err); resolve(); }
+    );
+  });
+}
+
+function listenOnce() {
+  return new Promise((resolve) => {
+    recognizer.recognizeOnceAsync(
+      (result) => {
+        if (result.reason === SpeechSDK.ResultReason.RecognizedSpeech) {
+          resolve(result.text);
+          return;
+        }
+        if (result.reason === SpeechSDK.ResultReason.Canceled) {
+          const details = SpeechSDK.CancellationDetails.fromResult(result);
+          console.error(
+            "STT canceled - reason:", details.reason,
+            "errorCode:", details.ErrorCode,
+            "errorDetails:", details.errorDetails
+          );
+        } else {
+          console.warn("No speech recognized, reason:", result.reason);
+        }
+        resolve(null);
+      },
+      (err) => { console.error("STT error:", err); resolve(null); }
+    );
+  });
+}
+
+async function sendTurn(text) {
+  const resp = await fetch(`${API_BASE}/conversation/${sessionId}/turn`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  return resp.json();
+}
+
+const MAX_CONSECUTIVE_SILENCE = 3;
+
+async function conversationLoop() {
+  let silenceCount = 0;
+
+  while (true) {
+    setStatus("Listening...");
+    const callerText = await listenOnce();
+
+    if (!callerText) {
+      silenceCount++;
+      if (silenceCount >= MAX_CONSECUTIVE_SILENCE) {
+        setStatus("Call ended - couldn't hear caller");
+        await speak("I'm having trouble hearing you. Please contact your IT helpdesk directly for assistance. Goodbye.");
+        recognizer.close();
+        synthesizer.close();
+        startBtn.disabled = false;
+        startBtn.textContent = "Start New Call";
+        return;
+      }
+      setStatus("Didn't catch that");
+      await speak("Sorry, I didn't catch that. Could you say that again?");
+      continue;
+    }
+
+    silenceCount = 0;
+    addLine("Caller", callerText);
+    setStatus("Thinking...");
+
+    const result = await sendTurn(callerText);
+    addLine("Agent", result.response);
+
+    setStatus("Speaking...");
+    await speak(result.response);
+
+    if (result.is_terminal) {
+      setStatus(result.escalated ? "Call ended - escalated" : "Call ended - reset complete");
+      recognizer.close();
+      synthesizer.close();
+      startBtn.disabled = false;
+      startBtn.textContent = "Start New Call";
+      return;
+    }
+  }
+}
+
+startBtn.addEventListener("click", async () => {
+  startBtn.disabled = true;
+  transcriptEl.innerHTML = "";
+  setStatus("Connecting...");
+
+  try {
+    speechConfig = await fetchSpeechToken();
+    recognizer = new SpeechSDK.SpeechRecognizer(speechConfig, SpeechSDK.AudioConfig.fromDefaultMicrophoneInput());
+    synthesizer = new SpeechSDK.SpeechSynthesizer(speechConfig);
+
+    const resp = await fetch(`${API_BASE}/conversation/start`, { method: "POST" });
+    const data = await resp.json();
+    sessionId = data.session_id;
+
+    addLine("Agent", data.greeting);
+    setStatus("Speaking...");
+    await speak(data.greeting);
+
+    await conversationLoop();
+  } catch (err) {
+    console.error(err);
+    setStatus("Error - check console");
+    startBtn.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

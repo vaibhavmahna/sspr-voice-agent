@@ -6,6 +6,7 @@ import requests
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 sys.path.insert(0, "src")
@@ -73,3 +74,10 @@ def conversation_turn(session_id: str, body: TurnRequest):
         "is_terminal": conversation.is_terminal,
         "escalated": conversation.result().escalated if conversation.is_terminal else False,
     }
+
+
+# Mounted last, deliberately - Starlette checks routes in the order they're
+# registered, so the API routes above always win first; anything else falls
+# through to the static frontend. Keeps the whole demo on one port instead
+# of juggling a second static server and CORS between them.
+app.mount("/", StaticFiles(directory="web", html=True), name="web")

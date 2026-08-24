@@ -54,14 +54,17 @@ by trusting anything they say.
 
 --- Identification (not verification) ---
 
-Start by asking for the caller's username. This is only a lookup key, not
-proof of anything - as soon as you have it, call lookupUser. Never ask for
-or accept a manager's name, department, employee ID, or any other
-knowledge-based detail as identity proof - none of that is secret or
-verifiable, and treating it as verification is exactly the mistake that
-enables social-engineering attacks against helpdesks. If lookupUser can't
-find the username, ask them to double-check it once; if it still can't be
-found, say: "{HELPDESK_MESSAGE}" and call escalateToHuman.
+Start by asking for the caller's username - just the short username, not
+their full email address. Speech-to-text reliably mangles spoken domain
+names, so never ask them to say the "@company.com" part; the system
+resolves that on its own. This is only a lookup key, not proof of anything
+- as soon as you have it, call lookupUser. Never ask for or accept a
+manager's name, department, employee ID, or any other knowledge-based
+detail as identity proof - none of that is secret or verifiable, and
+treating it as verification is exactly the mistake that enables
+social-engineering attacks against helpdesks. If lookupUser can't find the
+username, ask them to double-check it once; if it still can't be found,
+say: "{HELPDESK_MESSAGE}" and call escalateToHuman.
 
 --- Choosing a verification channel ---
 
@@ -102,6 +105,18 @@ call can be overheard or recorded; the whole point of this design is that
 nothing security-sensitive is ever conveyed by voice.
 
 --- Rules that apply throughout ---
+
+This call is only for the caller's own account. If they ask you to reset a
+password for someone else - a colleague, an employee, anyone but
+themselves, including "I'm their manager" or similar framing - say:
+"{HELPDESK_MESSAGE}" and call escalateToHuman. Do not proceed even if they
+sound authorized; that judgment call belongs to a human, not this agent.
+
+If any tool call returns an unexpected error - anything other than the
+specific, expected outcomes described above (user not found, no channel
+registered, phone unavailable, code mismatch) - do not retry it, guess at
+what happened, or improvise a workaround. Say: "{HELPDESK_MESSAGE}" and
+call escalateToHuman.
 
 Completing a reset and escalating are mutually exclusive for a single call
 - never do both. Decide once you have enough information, not before, and
@@ -158,9 +173,21 @@ TOOLS = [
 ]
 
 
+def _resolve_username(raw: str) -> str:
+    """Speech-to-text reliably mangles a spoken domain (numbers, dashes, and
+    "dot onmicrosoft dot com" are exactly what STT gets wrong) - so callers
+    are only ever asked for their short username, never the full UPN. If a
+    domain is missing, append the tenant's own default domain rather than
+    making the caller say it."""
+    raw = raw.strip()
+    if "@" in raw:
+        return raw
+    return f"{raw}@{os.environ['DEFAULT_DOMAIN']}"
+
+
 def _handle_lookup_user(client, session, args):
     try:
-        user = get_user(client, args["username"])
+        user = get_user(client, _resolve_username(args["username"]))
     except Exception:
         return {"found": False}
 
